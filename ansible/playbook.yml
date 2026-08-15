@@ -4,6 +4,8 @@
   gather_facts: false
 
   vars:
+    dockerhub_username: "{{ lookup('env', 'DOCKERHUB_USERNAME') }}"
+    dockerhub_token: "{{ lookup('env', 'DOCKERHUB_TOKEN') }}"
     target_environment: "{{ deploy_env | default('staging') }}"
 
   pre_tasks:
@@ -27,6 +29,16 @@
             if target_environment == 'staging'
             else production_namespace
           }}
+
+    - name: Validate Docker Hub credentials are available
+      ansible.builtin.assert:
+        that:
+          - dockerhub_username | length > 0
+          - dockerhub_token | length > 0
+        fail_msg: >-
+          DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must be exported
+          before running this playbook.
+      no_log: true
 
   tasks:
     - name: Verify target namespace exists
@@ -58,3 +70,34 @@
               environment: "{{ target_environment }}"
               managed-by: ansible
           data: "{{ kk_payments_config }}"
+
+    - name: Configure Docker Hub image pull secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: kijani-registry-credentials
+            namespace: "{{ target_namespace }}"
+            labels:
+              app: kk-payments
+              environment: "{{ target_environment }}"
+              managed-by: ansible
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: >-
+              {{
+                {
+                  'auths': {
+                    'https://index.docker.io/v1/': {
+                      'username': dockerhub_username,
+                      'password': dockerhub_token,
+                      'auth': (dockerhub_username ~ ':' ~ dockerhub_token) | b64encode
+                    }
+                  }
+                }
+                | to_json
+                | b64encode
+              }}
+      no_log: true

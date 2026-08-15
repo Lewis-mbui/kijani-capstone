@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: kk-payments
+  labels:
+    app: kk-payments
+
+spec:
+  type: ClusterIP
+
+  selector:
+    app: kk-payments
+
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3001
+      targetPort: http
