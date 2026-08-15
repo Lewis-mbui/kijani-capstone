@@ -12,3 +12,6 @@
 # Editor / OS files
 .vscode/
 .DS_Store
+
+# Python virtual environment
+.venv/

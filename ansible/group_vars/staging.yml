@@ -1,0 +1,9 @@
+staging_namespace: kijani-staging
+
+kk_payments_config:
+  APP_PORT: "3001"
+  DB_HOST: "postgres-staging.kijani.internal"
+  DB_PORT: "5432"
+  LOG_LEVEL: "debug"
+  MAX_CONNECTIONS: "10"
+  NODE_ENV: "staging"

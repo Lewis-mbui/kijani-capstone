@@ -1,0 +1,38 @@
+---
+- name: Configure KijaniKiosk staging environment
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - group_vars/staging.yml
+
+  tasks:
+    - name: Verify staging namespace exists
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ staging_namespace }}"
+      register: staging_namespace_info
+
+    - name: Fail if Terraform has not provisioned staging namespace
+      ansible.builtin.assert:
+        that:
+          - staging_namespace_info.resources | length == 1
+        fail_msg: >-
+          Namespace {{ staging_namespace }} does not exist.
+          Provision infrastructure with Terraform before running Ansible.
+
+    - name: Configure kk-payments staging ConfigMap
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: kk-payments-config
+            namespace: "{{ staging_namespace }}"
+            labels:
+              app: kk-payments
+              environment: staging
+              managed-by: ansible
+          data: "{{ kk_payments_config }}"
