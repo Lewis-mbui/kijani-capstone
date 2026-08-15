@@ -147,6 +147,34 @@ changed=0
 failed=0
 ```
 
+### 6. Deploy kk-payments to staging
+
+```bash
+kubectl apply \
+  -f k8s/kk-payments-deployment.yaml \
+  -f k8s/kk-payments-service.yaml \
+  -n kijani-staging
+
+kubectl rollout status deployment/kk-payments \
+  -n kijani-staging \
+  --timeout=120s
+```
+
+### 6. Deploy kk-payments to production
+
+The same Kubernetes manifests are reused for production:
+
+```bash
+kubectl apply \
+  -f k8s/kk-payments-deployment.yaml \
+  -f k8s/kk-payments-service.yaml \
+  -n kijani-project
+
+kubectl rollout status deployment/kk-payments \
+  -n kijani-project \
+  --timeout=120s
+```
+
 ## How to Run the Pipeline
 
 **Work in progress.**
@@ -175,6 +203,57 @@ A successful infrastructure setup demonstrates that:
 
 End-to-end application, pipeline, monitoring, and serverless verification commands will be added as those layers are completed.
 
+### Verify environment isolation
+
+```bash
+kubectl exec -n kijani-staging \
+  deploy/kk-payments \
+  -- printenv NODE_ENV
+
+kubectl exec -n kijani-project \
+  deploy/kk-payments \
+  -- printenv NODE_ENV
+```
+
+Expected:
+
+```bash
+staging
+production
+```
+
+### Verify application health
+
+For staging:
+
+```bash
+kubectl port-forward \
+  -n kijani-staging \
+  service/kk-payments \
+  3001:3001
+```
+
+Then:
+
+```bash
+curl -s http://127.0.0.1:3001/health
+```
+
+For production:
+
+```bash
+kubectl port-forward \
+  -n kijani-project \
+  service/kk-payments \
+  3002:3001
+```
+
+Then:
+
+```bash
+curl -s http://127.0.0.1:3002/health
+```
+
 ## Known Limitations
 
 The capstone is currently under active implementation.
@@ -185,5 +264,6 @@ The target system is production-approaching rather than a customer-ready product
 - Multi-region high availability and disaster recovery.
 - External secrets-management platforms such as HashiCorp Vault.
 - A complete production observability stack incorporating metrics, logs, traces, dashboards, and distributed alert management.
+- The currently deployed baseline image reports `v1.0.0-local` from `/health`. Release identity will be corrected when the Jenkins pipeline is redesigned to inject and promote the immutable `<semver>-<git-short-sha>` image version.
 
 Additional implementation-specific limitations will be documented as they are discovered.
