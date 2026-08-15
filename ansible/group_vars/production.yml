@@ -1,0 +1,9 @@
+production_namespace: kijani-project
+
+kk_payments_config:
+  PORT: "3001"
+  DB_HOST: "postgres-prod.kijani.internal"
+  DB_PORT: "5432"
+  LOG_LEVEL: "warn"
+  MAX_CONNECTIONS: "10"
+  NODE_ENV: "production"

@@ -25,3 +25,15 @@ resource "kubernetes_namespace_v1" "kijani_staging" {
     }
   }
 }
+
+resource "kubernetes_namespace_v1" "kijani_production" {
+  metadata {
+    name = var.production_namespace
+
+    labels = {
+      environment = "production"
+      project     = "kijanikiosk"
+      managed-by  = "terraform"
+    }
+  }
+}

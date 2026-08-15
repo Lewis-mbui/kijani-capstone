@@ -15,3 +15,9 @@ variable "staging_namespace" {
   type        = string
   default     = "kijani-staging"
 }
+
+variable "production_namespace" {
+  description = "Kubernetes namespace used for the KijaniKiosk production environment."
+  type        = string
+  default     = "kijani-project"
+}

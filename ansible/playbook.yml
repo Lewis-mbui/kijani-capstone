@@ -1,28 +1,50 @@
 ---
-- name: Configure KijaniKiosk staging environment
+- name: Configure KijaniKiosk environment
   hosts: localhost
   gather_facts: false
 
-  vars_files:
-    - group_vars/staging.yml
+  vars:
+    target_environment: "{{ deploy_env | default('staging') }}"
+
+  pre_tasks:
+    - name: Validate requested environment
+      ansible.builtin.assert:
+        that:
+          - target_environment in ['staging', 'production']
+        fail_msg: >-
+          Unsupported environment '{{ target_environment }}'.
+          Use staging or production.
+
+    - name: Load environment-specific variables
+      ansible.builtin.include_vars:
+        file: "group_vars/{{ target_environment }}.yml"
+
+    - name: Set target namespace
+      ansible.builtin.set_fact:
+        target_namespace: >-
+          {{
+            staging_namespace
+            if target_environment == 'staging'
+            else production_namespace
+          }}
 
   tasks:
-    - name: Verify staging namespace exists
+    - name: Verify target namespace exists
       kubernetes.core.k8s_info:
         api_version: v1
         kind: Namespace
-        name: "{{ staging_namespace }}"
-      register: staging_namespace_info
+        name: "{{ target_namespace }}"
+      register: namespace_info
 
-    - name: Fail if Terraform has not provisioned staging namespace
+    - name: Fail if Terraform has not provisioned target namespace
       ansible.builtin.assert:
         that:
-          - staging_namespace_info.resources | length == 1
+          - namespace_info.resources | length == 1
         fail_msg: >-
-          Namespace {{ staging_namespace }} does not exist.
+          Namespace {{ target_namespace }} does not exist.
           Provision infrastructure with Terraform before running Ansible.
 
-    - name: Configure kk-payments staging ConfigMap
+    - name: Configure kk-payments ConfigMap
       kubernetes.core.k8s:
         state: present
         definition:
@@ -30,9 +52,9 @@
           kind: ConfigMap
           metadata:
             name: kk-payments-config
-            namespace: "{{ staging_namespace }}"
+            namespace: "{{ target_namespace }}"
             labels:
               app: kk-payments
-              environment: staging
+              environment: "{{ target_environment }}"
               managed-by: ansible
           data: "{{ kk_payments_config }}"
