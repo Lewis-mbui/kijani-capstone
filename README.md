@@ -37,6 +37,7 @@ The current infrastructure and runtime setup requires:
 - Node.js and npm
 - Serverless Framework v3
 - AWS CLI for inspecting the local S3-compatible endpoint
+- `socat` for exposing the loopback-only local S3 emulator to Minikube
 
 The Ansible Kubernetes modules require the Python Kubernetes client. The tested version for this project is:
 
@@ -188,7 +189,17 @@ The staging configuration includes:
 PORT=3001
 DB_HOST=postgres-staging.kijani.internal
 NODE_ENV=staging
+RECEIPT_BUCKET=kk-payments-receipts-staging
+AWS_REGION=af-south-1
 ```
+
+For the local Track A integration, Ansible also discovers the Minikube host gateway dynamically and writes an S3 endpoint into the staging ConfigMap. On the current Docker-driver Minikube network this resolves to a value such as:
+
+```text
+S3_ENDPOINT=http://192.168.49.1:4570
+```
+
+The gateway is discovered at configuration time rather than committed as a machine-specific address.
 
 Verify the registry Secret metadata without exposing its contents:
 
@@ -306,7 +317,33 @@ kubectl get service kk-payments \
   -n kijani-project
 ```
 
-### 10. Start the staging receipt-processing subsystem
+### 10. Start the Minikube-to-host S3 relay
+
+`serverless-s3-local` binds its S3-compatible endpoint to host loopback (`127.0.0.1:4569`). Minikube Pods cannot reach that loopback listener directly.
+
+Start a local TCP relay that exposes the S3 emulator on the Minikube host gateway:
+
+```bash
+MINIKUBE_GATEWAY=$(minikube ssh -- "ip route show default" | awk '{print $3}')
+
+socat \
+  TCP-LISTEN:4570,bind="${MINIKUBE_GATEWAY}",reuseaddr,fork \
+  TCP:127.0.0.1:4569
+```
+
+Leave the relay running while testing the Kubernetes-to-serverless integration.
+
+Verify the relay from the host:
+
+```bash
+curl "http://${MINIKUBE_GATEWAY}:4570"
+```
+
+A successful response should return S3-compatible XML rather than `Connection refused`.
+
+The same gateway address is discovered by Ansible and used for the staging `S3_ENDPOINT`.
+
+### 11. Start the staging receipt-processing subsystem
 
 The capstone includes the Week 10 receipt workflow under:
 
@@ -351,7 +388,7 @@ Return to the repository root when finished:
 cd ../..
 ```
 
-### 11. Verify the local correlated receipt workflow
+### 12. Verify the host-local correlated receipt workflow
 
 The current application implementation publishes receipt events using:
 
@@ -384,6 +421,129 @@ processed S3 object
 ```
 
 This host-local test proves the application/serverless event contract before the same S3 endpoint configuration is wired into the Minikube staging workload.
+
+### 13. Verify the Kubernetes-hosted receipt workflow
+
+The first capstone release image verified in staging is:
+
+```text
+lewis0648/kk-payments:1.1.0-3dd5ce5
+```
+
+The image was built only after the Docker test target completed successfully, pushed to Docker Hub, and deployed to `kijani-staging`.
+
+Verify the currently running release and integration configuration:
+
+```bash
+kubectl exec \
+  -n kijani-staging \
+  deploy/kk-payments \
+  -- printenv APP_VERSION
+
+kubectl exec \
+  -n kijani-staging \
+  deploy/kk-payments \
+  -- printenv RECEIPT_BUCKET
+
+kubectl exec \
+  -n kijani-staging \
+  deploy/kk-payments \
+  -- printenv S3_ENDPOINT
+```
+
+For the verified release, the expected application version is:
+
+```text
+1.1.0-3dd5ce5
+```
+
+Start a staging port-forward:
+
+```bash
+kubectl port-forward \
+  -n kijani-staging \
+  service/kk-payments \
+  3001:3001
+```
+
+Submit a payment with a known correlation ID:
+
+```bash
+curl -i \
+  -X POST \
+  http://127.0.0.1:3001/payments \
+  -H 'Content-Type: application/json' \
+  -H 'X-Correlation-ID: k8s-receipt-e2e-002' \
+  -d '{"amount":1500,"currency":"KES"}'
+```
+
+Verify the Kubernetes application logs:
+
+```bash
+kubectl logs \
+  -n kijani-staging \
+  deployment/kk-payments \
+  --tail=50
+```
+
+The logs should include both:
+
+```text
+payment.created
+receipt.published
+```
+
+with the same `correlationId`.
+
+The downstream Serverless logs should then include:
+
+```text
+receipt.processing_started
+receipt.processed
+receipt.notification_dispatched
+```
+
+with that same correlation ID.
+
+Finally, inspect the processed receipt:
+
+```bash
+aws --no-sign-request \
+  --endpoint-url http://localhost:4569 \
+  s3 ls \
+  s3://kk-receipts-processed-staging/
+```
+
+and:
+
+```bash
+aws --no-sign-request \
+  --endpoint-url http://localhost:4569 \
+  s3 cp \
+  s3://kk-receipts-processed-staging/<processed-object-key> \
+  -
+```
+
+The verified Kubernetes-hosted flow produced a processed object containing:
+
+```text
+correlationId=k8s-receipt-e2e-002
+status=processed
+```
+
+This proves the current end-to-end seam:
+
+```text
+HTTP client
+  -> Minikube kk-payments Pod
+  -> dynamically discovered Minikube host gateway
+  -> socat relay
+  -> serverless-s3-local
+  -> kk-payments-receipts-staging
+  -> processReceiptUpload
+  -> kk-receipts-processed-staging
+  -> notifyReceipt
+```
 
 ## How to Run the Pipeline
 
@@ -633,18 +793,19 @@ At the current implementation milestone:
 - Both namespaces contain Docker Hub image pull credentials created by Ansible.
 - The same Kubernetes Deployment and Service manifests are reused across environments.
 - Both Deployments run three healthy `kk-payments` replicas.
-- Both `/health` endpoints respond successfully.
 - The production Dockerfile has explicit dependency, builder, test, and production stages.
 - The Docker test target successfully runs linting, automated tests, and the TypeScript build.
-- `kk-payments` emits structured JSON application logs.
-- Incoming correlation IDs are preserved in response headers, response bodies, and application logs.
-- `kk-payments` can publish a raw receipt event to `kk-payments-receipts-staging`.
-- The stage-aware Serverless configuration creates the staging raw and processed receipt buckets in the local S3-compatible environment.
-- `processReceiptUpload` consumes the raw receipt event and writes a processed receipt.
+- `kk-payments` emits structured JSON logs and preserves correlation IDs.
+- A SemVer + Git SHA release image, `1.1.0-3dd5ce5`, was built, verified locally, pushed to Docker Hub, and deployed successfully to staging.
+- Staging receives `RECEIPT_BUCKET`, `AWS_REGION`, and a dynamically derived `S3_ENDPOINT` through Ansible-managed configuration.
+- `serverless-s3-local` provides stage-aware raw and processed receipt buckets.
+- A `socat` relay exposes the host-loopback S3 emulator to the Minikube network without hard-coding the gateway in the repository.
+- `kk-payments` running inside Minikube successfully publishes raw receipt events to `kk-payments-receipts-staging`.
+- `processReceiptUpload` consumes the raw event and writes a processed receipt.
 - `notifyReceipt` consumes the processed receipt and emits a structured notification event.
-- A complete host-local transaction has been traced through `kk-payments`, both S3 buckets, the processor, and the notifier using one correlation ID.
+- One Kubernetes-hosted transaction has been traced end to end with `correlationId=k8s-receipt-e2e-002`.
 
-The next integration milestone is to make `kk-payments` running inside the Minikube staging namespace reach the host-local S3-compatible endpoint. Jenkins delivery automation, Prometheus monitoring, and AI-assisted operational verification remain to be implemented.
+The next implementation steps will be reassessed against the capstone guide before proceeding. Ingress exposure, Jenkins delivery automation, Prometheus monitoring, and the AI governance/intelligence layer remain pending.
 
 ## Known Limitations
 
@@ -659,8 +820,9 @@ The target system is production-approaching rather than a customer-ready product
 
 The current implementation also has the following temporary limitations:
 
-- The currently deployed Kubernetes baseline image still reports `v1.0.0-local` from `/health`. The application already supports `APP_VERSION`, and release identity will be wired to immutable `<semver>-<git-short-sha>` images when the Jenkins pipeline is implemented.
-- The complete receipt chain has been verified with `kk-payments` running directly on the host. Connectivity from the `kk-payments` Pod inside Minikube to the host-local S3-compatible endpoint has not yet been configured and verified.
+- Release identity is currently injected manually during staging deployment. Jenkins has not yet automated build-once/push/promote behavior for the immutable `<semver>-<git-short-sha>` image.
+- The Minikube-to-host S3 connection currently depends on a local `socat` relay because `serverless-s3-local` binds to host loopback. This is suitable for the local Track A demonstration but would be replaced by a routable managed object-store endpoint in production.
 - The current payment endpoint waits for receipt publication to succeed before returning success. A production payments system would normally use a more durable decoupling mechanism such as an outbox, queue, or retry-capable event transport.
+- The current production image is still based on Node.js 18 and emits an AWS SDK runtime support warning. Runtime hardening should move the image to Node.js 22 before final submission.
 
 Additional implementation-specific limitations will be documented as they are discovered.
