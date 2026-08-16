@@ -30,7 +30,7 @@ spec:
 
       containers:
         - name: kk-payments
-          image: lewis0648/kk-payments:1.1.0-1da0173
+          image: lewis0648/kk-payments:PIPELINE_REQUIRED
           imagePullPolicy: IfNotPresent
 
           ports:
