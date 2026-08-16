@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: kk-payments-staging
+
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - kijani-staging
+
+    relabel_configs:
+      - source_labels:
+          - __meta_kubernetes_pod_label_app
+        action: keep
+        regex: kk-payments
+
+      - source_labels:
+          - __meta_kubernetes_pod_container_port_number
+        action: keep
+        regex: "3001"
+
+      - source_labels:
+          - __meta_kubernetes_pod_name
+        target_label: pod
+
+      - source_labels:
+          - __meta_kubernetes_namespace
+        target_label: namespace
+
+      - target_label: __metrics_path__
+        replacement: /metrics
