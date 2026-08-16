@@ -1,0 +1,33 @@
+groups:
+  - name: kk-payments-alerts
+    rules:
+      - alert: KKPaymentsHighErrorRate
+        expr: |
+          (
+            sum(
+              rate(
+                kk_payments_http_requests_total{
+                  job="kk-payments-staging",
+                  route="/payments",
+                  status_code!~"2.."
+                }[1m]
+              )
+            )
+            /
+            sum(
+              rate(
+                kk_payments_http_requests_total{
+                  job="kk-payments-staging",
+                  route="/payments"
+                }[1m]
+              )
+            )
+          ) > 0.20
+        for: 1m
+        labels:
+          severity: warning
+          service: kk-payments
+          environment: staging
+        annotations:
+          summary: "kk-payments staging error rate is above 20%"
+          description: "More than 20% of recent /payments requests are non-2xx for at least 1 minute."
