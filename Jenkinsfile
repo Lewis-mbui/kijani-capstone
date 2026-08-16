@@ -25,6 +25,7 @@ pipeline {
     PAYMENTS_REPO_URL = 'https://github.com/Lewis-mbui/kijanikiosk-payments.git'
 
     STAGING_NAMESPACE = 'kijani-staging'
+    PRODUCTION_NAMESPACE = 'kijani-project'
     DEPLOYMENT_NAME   = 'kk-payments'
     CONTAINER_NAME    = 'kk-payments'
   }
@@ -179,7 +180,8 @@ pipeline {
             mkdir -p .jenkins-rendered
 
             sed \
-              "s|lewis0648/kk-payments:PIPELINE_REQUIRED|${FULL_IMAGE}|g" \
+              -e "s|lewis0648/kk-payments:PIPELINE_REQUIRED|${FULL_IMAGE}|g" \
+              -e "s|PIPELINE_VERSION_REQUIRED|${IMAGE_TAG}|g" \
               k8s/kk-payments-deployment.yaml \
               > .jenkins-rendered/kk-payments-deployment.yaml
 
@@ -187,12 +189,6 @@ pipeline {
             kubectl apply \
               -f .jenkins-rendered/kk-payments-deployment.yaml \
               -f k8s/kk-payments-service.yaml \
-              -n "${STAGING_NAMESPACE}"
-
-            echo "Setting release identity..."
-            kubectl set env \
-              deployment/${DEPLOYMENT_NAME} \
-              APP_VERSION="${IMAGE_TAG}" \
               -n "${STAGING_NAMESPACE}"
           '''
         }
@@ -285,6 +281,51 @@ pipeline {
             echo "ERROR: staging smoke test failed."
             echo "Expected healthy response from release ${IMAGE_TAG}."
             exit 1
+          '''
+        }
+      }
+    }
+
+    stage('Approve Production') {
+      options {
+        timeout(time: 10, unit: 'MINUTES')
+      }
+
+      steps {
+        script {
+          input(
+            message: """
+Staging validation PASSED.
+
+Release: ${FULL_IMAGE}
+Staging: ${STAGING_NAMESPACE}
+
+Promote this exact image to production?
+""",
+            ok: 'Deploy to Production'
+          )
+        }
+      }
+    }
+
+    stage('Deploy Production') {
+      steps {
+        withCredentials([
+          file(
+            credentialsId: 'minikube-kubeconfig',
+            variable: 'KUBECONFIG'
+          )
+        ]) {
+          sh '''
+            set -e
+
+            echo "Promoting the validated staging release to production:"
+            echo "${FULL_IMAGE}"
+
+            kubectl apply \
+              -f .jenkins-rendered/kk-payments-deployment.yaml \
+              -f k8s/kk-payments-service.yaml \
+              -n "${PRODUCTION_NAMESPACE}"
           '''
         }
       }
