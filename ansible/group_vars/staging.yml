@@ -7,3 +7,5 @@ kk_payments_config:
   LOG_LEVEL: "debug"
   MAX_CONNECTIONS: "10"
   NODE_ENV: "staging"
+  RECEIPT_BUCKET: "kk-payments-receipts-staging"
+  AWS_REGION: "af-south-1"

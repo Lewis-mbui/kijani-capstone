@@ -30,6 +30,30 @@
             else production_namespace
           }}
 
+    - name: Discover Minikube host gateway
+      ansible.builtin.shell: |
+        set -o pipefail
+        minikube ssh -- "ip route show default" | awk '{print $3}'
+      args:
+        executable: /bin/bash
+      register: minikube_host_gateway
+      changed_when: false
+      when: target_environment == 'staging'
+
+    - name: Add local S3 endpoint to staging configuration
+      ansible.builtin.set_fact:
+        kk_payments_config: >-
+          {{
+            kk_payments_config
+            | combine({
+                'S3_ENDPOINT':
+                  'http://' ~
+                  (minikube_host_gateway.stdout | trim) ~
+                  ':4570'
+              })
+          }}
+      when: target_environment == 'staging'
+
     - name: Validate Docker Hub credentials are available
       ansible.builtin.assert:
         that:
