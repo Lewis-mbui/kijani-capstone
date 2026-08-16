@@ -148,10 +148,15 @@ pipeline {
                 --username "${DOCKERHUB_USERNAME}" \
                 --password-stdin
 
-            echo "Pushing immutable image:"
-            echo "${FULL_IMAGE}"
+             echo "Checking immutable release tag ${FULL_IMAGE}..."
 
-            docker push "${FULL_IMAGE}"
+            if docker manifest inspect "${FULL_IMAGE}" >/dev/null 2>&1; then
+              echo "Image already exists in Docker Hub."
+              echo "Reusing immutable release ${FULL_IMAGE}; push skipped."
+            else
+              echo "Publishing new immutable release ${FULL_IMAGE}..."
+              docker push "${FULL_IMAGE}"
+            fi
 
             docker logout
           '''
@@ -170,16 +175,21 @@ pipeline {
           sh '''
             set -e
 
-            echo "Verifying Kubernetes access..."
-            kubectl config current-context
+            echo "Rendering shared Deployment manifest..."
+            mkdir -p .jenkins-rendered
 
-            echo "Deploying ${FULL_IMAGE} to ${STAGING_NAMESPACE}..."
+            sed \
+              "s|lewis0648/kk-payments:PIPELINE_REQUIRED|${FULL_IMAGE}|g" \
+              k8s/kk-payments-deployment.yaml \
+              > .jenkins-rendered/kk-payments-deployment.yaml
 
-            kubectl set image \
-              deployment/${DEPLOYMENT_NAME} \
-              ${CONTAINER_NAME}=${FULL_IMAGE} \
+            echo "Applying staging runtime..."
+            kubectl apply \
+              -f .jenkins-rendered/kk-payments-deployment.yaml \
+              -f k8s/kk-payments-service.yaml \
               -n "${STAGING_NAMESPACE}"
 
+            echo "Setting release identity..."
             kubectl set env \
               deployment/${DEPLOYMENT_NAME} \
               APP_VERSION="${IMAGE_TAG}" \
@@ -229,6 +239,56 @@ pipeline {
         }
       }
     }
+
+    stage('Smoke Test Staging') {
+      steps {
+        withCredentials([
+          file(
+            credentialsId: 'minikube-kubeconfig',
+            variable: 'KUBECONFIG'
+          )
+        ]) {
+          sh '''
+            set -e
+
+            echo "Running staging smoke test..."
+
+            ATTEMPT=1
+            MAX_ATTEMPTS=5
+
+            while [ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]; do
+              echo "Smoke test attempt ${ATTEMPT}/${MAX_ATTEMPTS}"
+
+              RESPONSE=$(
+                kubectl exec \
+                  -n "${STAGING_NAMESPACE}" \
+                  deployment/${DEPLOYMENT_NAME} \
+                  -- wget -qO- \
+                  "http://${DEPLOYMENT_NAME}:3001/health"
+              ) || true
+
+              echo "Response: ${RESPONSE}"
+
+              if echo "${RESPONSE}" |
+                  grep -q '"status":"ok"' &&
+                echo "${RESPONSE}" |
+                  grep -q "\\"version\\":\\"${IMAGE_TAG}\\""; then
+
+                echo "Staging smoke test PASSED."
+                exit 0
+              fi
+
+              ATTEMPT=$((ATTEMPT + 1))
+              sleep 3
+            done
+
+            echo "ERROR: staging smoke test failed."
+            echo "Expected healthy response from release ${IMAGE_TAG}."
+            exit 1
+          '''
+        }
+      }
+    }
   }
 
   post {
@@ -245,6 +305,8 @@ pipeline {
         docker image rm \
           "${APP_NAME}:test-${BUILD_NUMBER}" \
           2>/dev/null || true
+
+        rm -rf .jenkins-rendered
       '''
     }
   }
