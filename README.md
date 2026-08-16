@@ -16,7 +16,7 @@ The system follows an infrastructure-first delivery model:
 - **Minikube** hosts the isolated staging and production Kubernetes environments.
 - **Docker Hub** will store immutable `kk-payments` container images tagged using semantic version and Git commit SHA.
 - **Prometheus** will monitor a meaningful `kk-payments` health signal.
-- **Serverless Framework** will provide asynchronous receipt processing.
+- **Serverless Framework** provides stage-aware asynchronous receipt processing backed by local S3-compatible storage during Track A development.
 - **AI-assisted operations** will be used for an operational task with documented human governance.
 
 The detailed project scope is available in [`docs/scope.md`](docs/scope.md).
@@ -34,6 +34,9 @@ The current infrastructure and runtime setup requires:
 - Python 3 with virtual environment support
 - Docker Hub account with access to the private `lewis0648/kk-payments` repository
 - Docker Hub access token
+- Node.js and npm
+- Serverless Framework v3
+- AWS CLI for inspecting the local S3-compatible endpoint
 
 The Ansible Kubernetes modules require the Python Kubernetes client. The tested version for this project is:
 
@@ -43,7 +46,7 @@ kubernetes==36.0.3
 
 Python dependencies are recorded in `requirements.txt`.
 
-Additional Jenkins, Serverless Framework, and Prometheus requirements will be documented as those layers are implemented and verified.
+The serverless receipt subsystem also uses `serverless-offline` and `serverless-s3-local`. Jenkins and Prometheus requirements will be documented as those layers are implemented and verified.
 
 ## Setup
 
@@ -303,6 +306,85 @@ kubectl get service kk-payments \
   -n kijani-project
 ```
 
+### 10. Start the staging receipt-processing subsystem
+
+The capstone includes the Week 10 receipt workflow under:
+
+```text
+serverless/kk-receipts/
+```
+
+Install its Node.js dependencies:
+
+```bash
+cd serverless/kk-receipts
+npm install
+```
+
+Start the local serverless environment explicitly in the staging stage:
+
+```bash
+serverless offline start --stage staging
+```
+
+The stage-aware Serverless configuration resolves the receipt buckets to:
+
+```text
+kk-payments-receipts-staging
+kk-receipts-processed-staging
+```
+
+The raw receipt bucket is the integration boundary used by `kk-payments`. An S3 `ObjectCreated` event invokes `processReceiptUpload`, which writes the processed receipt to the processed bucket. A second S3 event invokes `notifyReceipt`, which emits the final structured notification log.
+
+Verify the local S3-compatible buckets from another terminal:
+
+```bash
+aws --no-sign-request \
+  --endpoint-url http://localhost:4569 \
+  --region af-south-1 \
+  s3 ls
+```
+
+Return to the repository root when finished:
+
+```bash
+cd ../..
+```
+
+### 11. Verify the local correlated receipt workflow
+
+The current application implementation publishes receipt events using:
+
+```text
+RECEIPT_BUCKET
+S3_ENDPOINT
+AWS_REGION
+```
+
+For the verified host-local integration test, `kk-payments` was started with the staging receipt bucket and the local S3-compatible endpoint. A payment request carrying an explicit correlation ID was then submitted:
+
+```bash
+curl -i \
+  -X POST \
+  http://127.0.0.1:3001/payments \
+  -H 'Content-Type: application/json' \
+  -H 'X-Correlation-ID: receipt-e2e-001' \
+  -d '{"amount":1250,"currency":"KES"}'
+```
+
+The same correlation ID must be preserved through:
+
+```text
+kk-payments: payment.created
+kk-payments: receipt.published
+kk-receipts-processor: receipt.processing_started
+kk-receipts-processor: receipt.processed
+kk-receipts-notifier: receipt.notification_dispatched
+processed S3 object
+```
+
+This host-local test proves the application/serverless event contract before the same S3 endpoint configuration is wired into the Minikube staging workload.
+
 ## How to Run the Pipeline
 
 **Work in progress.**
@@ -463,6 +545,83 @@ curl -s http://127.0.0.1:3002/health
 
 The endpoint should return JSON indicating that `kk-payments` is healthy.
 
+### Verify structured logging and correlation IDs
+
+The current `kk-payments` application preserves an incoming `X-Correlation-ID` header and returns it in both the response header and JSON response body.
+
+Example:
+
+```bash
+curl -i \
+  -H 'X-Correlation-ID: demo-001' \
+  http://127.0.0.1:3001/health
+```
+
+The response should include:
+
+```text
+x-correlation-id: demo-001
+```
+
+and a JSON body containing:
+
+```text
+"correlationId":"demo-001"
+```
+
+Application events are emitted as structured JSON logs containing fields such as `timestamp`, `level`, `service`, `event`, and `correlationId`.
+
+### Verify the end-to-end receipt workflow
+
+After the staging Serverless environment and the receipt-enabled `kk-payments` process are running, submit a payment with a known correlation ID:
+
+```bash
+curl -i \
+  -X POST \
+  http://127.0.0.1:3001/payments \
+  -H 'Content-Type: application/json' \
+  -H 'X-Correlation-ID: receipt-e2e-001' \
+  -d '{"amount":1250,"currency":"KES"}'
+```
+
+The application should log `payment.created` followed by `receipt.published`.
+
+The serverless processor should then log:
+
+```text
+receipt.processing_started
+receipt.processed
+```
+
+and the notifier should log:
+
+```text
+receipt.notification_dispatched
+```
+
+All of those events should contain the same correlation ID.
+
+List the processed receipt objects:
+
+```bash
+aws --no-sign-request \
+  --endpoint-url http://localhost:4569 \
+  s3 ls \
+  s3://kk-receipts-processed-staging/
+```
+
+Inspect a processed object:
+
+```bash
+aws --no-sign-request \
+  --endpoint-url http://localhost:4569 \
+  s3 cp \
+  s3://kk-receipts-processed-staging/<processed-object-key> \
+  -
+```
+
+A successfully processed object contains the original transaction data together with the same `correlationId`, `status: processed`, and a `processedAt` timestamp.
+
 ### Current verified state
 
 At the current implementation milestone:
@@ -475,8 +634,17 @@ At the current implementation milestone:
 - The same Kubernetes Deployment and Service manifests are reused across environments.
 - Both Deployments run three healthy `kk-payments` replicas.
 - Both `/health` endpoints respond successfully.
+- The production Dockerfile has explicit dependency, builder, test, and production stages.
+- The Docker test target successfully runs linting, automated tests, and the TypeScript build.
+- `kk-payments` emits structured JSON application logs.
+- Incoming correlation IDs are preserved in response headers, response bodies, and application logs.
+- `kk-payments` can publish a raw receipt event to `kk-payments-receipts-staging`.
+- The stage-aware Serverless configuration creates the staging raw and processed receipt buckets in the local S3-compatible environment.
+- `processReceiptUpload` consumes the raw receipt event and writes a processed receipt.
+- `notifyReceipt` consumes the processed receipt and emits a structured notification event.
+- A complete host-local transaction has been traced through `kk-payments`, both S3 buckets, the processor, and the notifier using one correlation ID.
 
-Pipeline, monitoring, serverless integration, structured logging, correlation-ID tracing, and AI-assisted operational verification will be added as those layers are implemented.
+The next integration milestone is to make `kk-payments` running inside the Minikube staging namespace reach the host-local S3-compatible endpoint. Jenkins delivery automation, Prometheus monitoring, and AI-assisted operational verification remain to be implemented.
 
 ## Known Limitations
 
@@ -489,8 +657,10 @@ The target system is production-approaching rather than a customer-ready product
 - External secrets-management platforms such as HashiCorp Vault.
 - A complete production observability stack incorporating metrics, logs, traces, dashboards, and distributed alert management.
 
-The current implementation also has the following temporary limitation:
+The current implementation also has the following temporary limitations:
 
-- The deployed baseline image reports `v1.0.0-local` from `/health`. Release identity will be corrected when the Jenkins pipeline is redesigned to build and promote immutable `<semver>-<git-short-sha>` Docker images.
+- The currently deployed Kubernetes baseline image still reports `v1.0.0-local` from `/health`. The application already supports `APP_VERSION`, and release identity will be wired to immutable `<semver>-<git-short-sha>` images when the Jenkins pipeline is implemented.
+- The complete receipt chain has been verified with `kk-payments` running directly on the host. Connectivity from the `kk-payments` Pod inside Minikube to the host-local S3-compatible endpoint has not yet been configured and verified.
+- The current payment endpoint waits for receipt publication to succeed before returning success. A production payments system would normally use a more durable decoupling mechanism such as an outbox, queue, or retry-capable event transport.
 
 Additional implementation-specific limitations will be documented as they are discovered.
