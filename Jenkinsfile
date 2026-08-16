@@ -22,8 +22,11 @@ pipeline {
     APP_NAME          = 'kk-payments'
     IMAGE_REPO        = 'lewis0648/kk-payments'
     DOCKERFILE        = 'Dockerfile.production'
-
     PAYMENTS_REPO_URL = 'https://github.com/Lewis-mbui/kijanikiosk-payments.git'
+
+    STAGING_NAMESPACE = 'kijani-staging'
+    DEPLOYMENT_NAME   = 'kk-payments'
+    CONTAINER_NAME    = 'kk-payments'
   }
 
   stages {
@@ -123,6 +126,107 @@ pipeline {
           docker image inspect "${FULL_IMAGE}" \
             --format='{{.Id}}'
         '''
+      }
+    }
+
+    stage('Push Image') {
+      steps {
+        withCredentials([
+          usernamePassword(
+            credentialsId: 'dockerhub-credentials',
+            usernameVariable: 'DOCKERHUB_USERNAME',
+            passwordVariable: 'DOCKERHUB_TOKEN'
+          )
+        ]) {
+          sh '''
+            set -e
+
+            echo "Authenticating to Docker Hub..."
+
+            echo "${DOCKERHUB_TOKEN}" |
+              docker login \
+                --username "${DOCKERHUB_USERNAME}" \
+                --password-stdin
+
+            echo "Pushing immutable image:"
+            echo "${FULL_IMAGE}"
+
+            docker push "${FULL_IMAGE}"
+
+            docker logout
+          '''
+        }
+      }
+    }
+
+    stage('Deploy Staging') {
+      steps {
+        withCredentials([
+          file(
+            credentialsId: 'minikube-kubeconfig',
+            variable: 'KUBECONFIG'
+          )
+        ]) {
+          sh '''
+            set -e
+
+            echo "Verifying Kubernetes access..."
+            kubectl config current-context
+
+            echo "Deploying ${FULL_IMAGE} to ${STAGING_NAMESPACE}..."
+
+            kubectl set image \
+              deployment/${DEPLOYMENT_NAME} \
+              ${CONTAINER_NAME}=${FULL_IMAGE} \
+              -n "${STAGING_NAMESPACE}"
+
+            kubectl set env \
+              deployment/${DEPLOYMENT_NAME} \
+              APP_VERSION="${IMAGE_TAG}" \
+              -n "${STAGING_NAMESPACE}"
+          '''
+        }
+      }
+    }
+
+    stage('Verify Staging Rollout') {
+      steps {
+        withCredentials([
+          file(
+            credentialsId: 'minikube-kubeconfig',
+            variable: 'KUBECONFIG'
+          )
+        ]) {
+          sh '''
+            set -e
+
+            echo "Waiting for staging rollout..."
+
+            kubectl rollout status \
+              deployment/${DEPLOYMENT_NAME} \
+              -n "${STAGING_NAMESPACE}" \
+              --timeout=120s
+
+            DEPLOYED_IMAGE=$(
+              kubectl get deployment "${DEPLOYMENT_NAME}" \
+                -n "${STAGING_NAMESPACE}" \
+                -o jsonpath='{.spec.template.spec.containers[0].image}'
+            )
+
+            echo "Expected image: ${FULL_IMAGE}"
+            echo "Deployed image: ${DEPLOYED_IMAGE}"
+
+            if [ "${DEPLOYED_IMAGE}" != "${FULL_IMAGE}" ]; then
+              echo "ERROR: staging image does not match the release image"
+              exit 1
+            fi
+
+            echo "Staging pods:"
+            kubectl get pods \
+              -n "${STAGING_NAMESPACE}" \
+              -l app=kk-payments
+          '''
+        }
       }
     }
   }
