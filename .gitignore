@@ -15,3 +15,7 @@
 
 # Python virtual environment
 .venv/
+
+# Serverless
+**/.serverless/
+**/node_modules/

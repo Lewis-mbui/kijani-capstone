@@ -1,0 +1,91 @@
+service: kijani-receipts
+
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  stage: ${opt:stage, 'dev'}
+  region: af-south-1
+
+  environment:
+    NODE_ENV: ${self:provider.stage}
+    DEFAULT_CURRENCY: KES
+    SERVICE_NAME: ${self:service}
+    S3_ENDPOINT: ${env:S3_ENDPOINT, 'http://localhost:4569'}
+
+functions:
+  generateReceipt:
+    handler: handlers/receipts.generate
+    description: Generates a receipt and submits it for asynchronous processing
+
+    environment:
+      OUTPUT_BUCKET: ${self:custom.receiptsBucket}
+
+    events:
+      - httpApi:
+          path: /receipts
+          method: POST
+
+  processReceiptUpload:
+    handler: handlers/processor.process
+    description: Processes raw receipt events
+    timeout: 30
+    memorySize: 256
+
+    environment:
+      OUTPUT_BUCKET: ${self:custom.processorBucket}
+
+    events:
+      - s3:
+          bucket: ${self:custom.receiptsBucket}
+          event: s3:ObjectCreated:*
+          rules:
+            - prefix: receipt-
+            - suffix: .json
+          existing: true
+
+  notifyReceipt:
+    handler: handlers/notifier.notify
+    description: Dispatches processed receipt notifications
+
+    environment:
+      NOTIFICATION_CHANNEL: log
+
+    events:
+      - s3:
+          bucket: ${self:custom.processorBucket}
+          event: s3:ObjectCreated:*
+          rules:
+            - prefix: processed-
+            - suffix: .json
+          existing: true
+
+plugins:
+  - serverless-offline
+  - serverless-s3-local
+
+custom:
+  receiptsBucket: kk-payments-receipts-${self:provider.stage}
+  processorBucket: kk-receipts-processed-${self:provider.stage}
+
+  s3:
+    host: localhost
+    port: 4569
+    directory: /tmp/kijani-s3-local
+
+  serverless-offline:
+    httpPort: 3000
+    lambdaPort: 3002
+
+resources:
+  Resources:
+    ReceiptsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.receiptsBucket}
+
+    ProcessorBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.processorBucket}
