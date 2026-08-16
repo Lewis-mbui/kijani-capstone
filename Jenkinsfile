@@ -330,6 +330,96 @@ Promote this exact image to production?
         }
       }
     }
+
+    stage('Verify Production') {
+      steps {
+        withCredentials([
+          file(
+            credentialsId: 'minikube-kubeconfig',
+            variable: 'KUBECONFIG'
+          )
+        ]) {
+          sh '''
+            set -e
+
+            echo "Waiting for production rollout..."
+
+            kubectl rollout status \
+              deployment/${DEPLOYMENT_NAME} \
+              -n "${PRODUCTION_NAMESPACE}" \
+              --timeout=120s
+
+            DEPLOYED_IMAGE=$(
+              kubectl get deployment "${DEPLOYMENT_NAME}" \
+                -n "${PRODUCTION_NAMESPACE}" \
+                -o jsonpath='{.spec.template.spec.containers[0].image}'
+            )
+
+            echo "Approved image: ${FULL_IMAGE}"
+            echo "Production image: ${DEPLOYED_IMAGE}"
+
+            if [ "${DEPLOYED_IMAGE}" != "${FULL_IMAGE}" ]; then
+              echo "ERROR: production is not running the approved image"
+              exit 1
+            fi
+
+            kubectl get pods \
+              -n "${PRODUCTION_NAMESPACE}" \
+              -l app=kk-payments
+          '''
+        }
+      }
+    }
+
+    stage('Smoke Test Production') {
+      steps {
+        withCredentials([
+          file(
+            credentialsId: 'minikube-kubeconfig',
+            variable: 'KUBECONFIG'
+          )
+        ]) {
+          sh '''
+            set -e
+
+            echo "Running production smoke test..."
+
+            ATTEMPT=1
+            MAX_ATTEMPTS=5
+
+            while [ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]; do
+              echo "Smoke test attempt ${ATTEMPT}/${MAX_ATTEMPTS}"
+
+              RESPONSE=$(
+                kubectl exec \
+                  -n "${PRODUCTION_NAMESPACE}" \
+                  deployment/${DEPLOYMENT_NAME} \
+                  -- wget -qO- \
+                  "http://${DEPLOYMENT_NAME}:3001/health"
+              ) || true
+
+              echo "Response: ${RESPONSE}"
+
+              if echo "${RESPONSE}" |
+                  grep -q '"status":"ok"' &&
+                echo "${RESPONSE}" |
+                  grep -q "\\"version\\":\\"${IMAGE_TAG}\\""; then
+
+                echo "Production smoke test PASSED."
+                exit 0
+              fi
+
+              ATTEMPT=$((ATTEMPT + 1))
+              sleep 3
+            done
+
+            echo "ERROR: production smoke test failed."
+            echo "Expected release ${IMAGE_TAG}."
+            exit 1
+          '''
+        }
+      }
+    }
   }
 
   post {
