@@ -1,0 +1,16 @@
+FROM node:22-alpine
+
+ARG KUBECTL_VERSION=v1.35.1
+
+RUN apk add --no-cache \
+  bash \
+  ca-certificates \
+  curl \
+  docker-cli \
+  git \
+  && curl -fsSLo /usr/local/bin/kubectl \
+  "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+  && chmod +x /usr/local/bin/kubectl \
+  && kubectl version --client
+
+WORKDIR /workspace
