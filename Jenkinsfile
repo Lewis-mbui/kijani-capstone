@@ -4,7 +4,7 @@ pipeline {
       image 'kijanikiosk-capstone-agent:22'
       args '''
         --network minikube
-        --group-add 973
+        --group-add ${DOCKER_GID}
         -v /var/run/docker.sock:/var/run/docker.sock
       '''
       reuseNode true
