@@ -11,6 +11,30 @@ pipeline {
     }
   }
 
+  triggers {
+    GenericTrigger(
+      genericVariables: [
+        [key: 'webhook_ref', value: '$.ref'],
+        [key: 'webhook_repo', value: '$.repository.full_name']
+      ],
+
+      causeString: 'Triggered by $webhook_repo on $webhook_ref',
+
+      token: '',
+      tokenCredentialId: 'kijani-webhook-token',
+
+      printContributedVariables: true,
+      printPostContent: false,
+
+      silentResponse: false,
+
+      shouldNotFlatten: false,
+
+      regexpFilterText: '$webhook_repo:$webhook_ref',
+      regexpFilterExpression: '^Lewis-mbui/kijanikiosk-payments:refs/heads/main$'
+    )
+  }
+
   options {
     skipDefaultCheckout(true)
     timeout(time: 20, unit: 'MINUTES')
